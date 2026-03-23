@@ -1,7 +1,5 @@
-# Houston
-Houston is a C++ based dashboard for monitoring microcontrollers during operation. I built it to monitor my university's
-wind turbine, but it can be used for any board that supports serial data.
-
+# Houston V3 (WIP)
+Updated version of Houston that aims to (eventually) add functionality to graph only subsets of live data based on user selection and implement some check to detect when producer-consumer pipeline queue is filling up faster than it is being processed.
 ![img.png](src/resource/img.png)
 
 ## How to Use
