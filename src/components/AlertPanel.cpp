@@ -1,6 +1,5 @@
 #include "AlertPanel.h"
 #include "../consumer/TypedConsumer.h"
-
 AlertPanel::~AlertPanel() {
 
 }
@@ -10,6 +9,7 @@ void AlertPanel::start() {
 }
 
 void AlertPanel::render() {
+    bool queueAlert=false;
     DataConsumer *consumer = dispatcher->getHandler(ID_Alert);
     if (consumer) {
         auto *alertConsumer = static_cast<TypedConsumer<std::string> *>(consumer);
@@ -17,11 +17,14 @@ void AlertPanel::render() {
             std::optional<std::string> data = alertConsumer->pop();
             alerts.push_back(std::move(*data));
         }
+	if(alertConsumer->isFillingUpTooFast()){
+		queueAlert=true;
+	}
     }
     ImGui::Begin("Alerts");
     for (auto &s: alerts) {
         ImGui::Text("%s", s.c_str());
-        ImGui::Text("%s", (char *)s.isFillingUpTooFast());
+        ImGui::Text("%s", (char *)queueAlert);
     }
     if (ImGui::Button("Clear")) {
         alerts.clear();

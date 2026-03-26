@@ -4,6 +4,8 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+
+
 namespace fs = std::filesystem;
 
 ImPlotPoint TelemetryGetter(int idx, void* data) {
@@ -22,6 +24,7 @@ void TelemetryPanel::start() {
 }
 
 void TelemetryPanel::render() {
+    bool queueAlert=false;
     // 1. Process Incoming Data from the Queue
     DataConsumer *consumer = dispatcher->getHandler(ID_Telemetry);
     if (consumer) {
@@ -33,6 +36,9 @@ void TelemetryPanel::render() {
                 telemetryMap[key] = val; 
             }
         }
+	if(queueData->isFillingUpTooFast()){
+		queueAlert=true;
+	}
     }
 
     // 2. Background File Logging (Runs every frame while savingFile is true)
@@ -57,7 +63,7 @@ void TelemetryPanel::render() {
     ImGui::Separator();
     for (const auto &pair : telemetryMap) {
         ImGui::Text("%s", pair.first.c_str());
-        ImGui::Text("%s", (char *)pair.isFillingUpTooFast());
+        ImGui::Text("%s", (char *)queueAlert);
         ImGui::NextColumn();
         ImGui::Text("%s", pair.second.c_str());
         ImGui::NextColumn();
