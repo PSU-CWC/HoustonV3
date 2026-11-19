@@ -7,6 +7,18 @@ LiveDataPanel::~LiveDataPanel() {
 
 }
 
+void LiveDataPanel::remember(uint16_t id) {
+    auto &packet = liveDataMap[id];
+    std::string label(packet.label, strnlen(packet.label, sizeof(packet.label)));
+    if (packet.valueType == TYPE_FLOAT) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%g", *floatMap[id]);
+        applied[label] = buf;
+    } else {
+        applied[label] = std::to_string(*intMap[id]);
+    }
+}
+
 void LiveDataPanel::start() {
     refreshPackets();
 }
@@ -82,6 +94,7 @@ void LiveDataPanel::render() {
                     // Update existing metadata (like the label or type) if it changed
                     liveDataMap[packet.packetID] = packet;
                 }
+                remember(packet.packetID);
             }
         }
     }
@@ -108,14 +121,16 @@ void LiveDataPanel::render() {
             // Checkbox logic: casting the int32 memory to bool for ImGui
             if (ImGui::Checkbox(label, reinterpret_cast<bool*>(intMap[id]))) {
                 sendModifyPacket(id, packet.valueType);
+                remember(id);
             }
         } 
         else if (packet.valueType == TYPE_FLOAT) {
             ImGui::SetNextItemWidth(150);
-            ImGui::InputFloat(label, floatMap[id], 0.01f, 1.0f, "%.3f");
+            ImGui::InputFloat(label, floatMap[id], 0.0f, 0.0f, "%g");
             ImGui::SameLine();
             if (ImGui::Button("Apply")) {
                 sendModifyPacket(id, packet.valueType);
+                remember(id);
             }
         } 
         else {
@@ -125,6 +140,7 @@ void LiveDataPanel::render() {
             ImGui::SameLine();
             if (ImGui::Button("Apply")) {
                 sendModifyPacket(id, packet.valueType);
+                remember(id);
             }
         }
 
@@ -141,6 +157,7 @@ void LiveDataPanel::render() {
 }
 
 void LiveDataPanel::stop() {
+    applied.clear();
     liveDataMap.clear();
     intMap.clear();
     floatMap.clear();

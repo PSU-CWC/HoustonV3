@@ -1,5 +1,7 @@
 #include "TelemetryPanel.h"
 #include "../consumer/TelemetryConsumer.h"
+#include "ImuPanel.h"
+#include "LiveDataPanel.h"
 #include <chrono>
 #include <iostream>
 #include <filesystem>
@@ -9,8 +11,6 @@
 namespace fs = std::filesystem;
 
 ImPlotPoint TelemetryGetter(int idx, void* data) {
-    printf("TelemetryGetter called for idx %d\n", idx);
-
     auto* buffer = (Util::ScrollingBuffer*)data;
     // This handles the circular wrap-around logic
     int real_idx = (buffer->Offset + idx) % (int)buffer->Data.size();
@@ -45,12 +45,18 @@ void TelemetryPanel::render() {
     if (savingFile && file.is_open()) {
         auto now = std::chrono::system_clock::now();
         auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
-        file << ms.time_since_epoch().count() << ",";
+        file << ms.time_since_epoch().count();
 
         for (size_t i = 1; i < csvHeaders.size(); i++) {
             const std::string& key = csvHeaders[i];
-            file << (telemetryMap.count(key) > 0 ? telemetryMap[key] : "0");
-            if (i < csvHeaders.size() - 1) file << ",";
+            file << "," << (telemetryMap.count(key) > 0 ? telemetryMap[key] : "0");
+        }
+        if (liveData) {
+            auto &live = liveData->appliedValues();
+            for (const auto &label : liveHeaders) {
+                auto it = live.find(label);
+                file << "," << (it != live.end() ? it->second : "");
+            }
         }
         file << "\n";
     }
@@ -81,6 +87,7 @@ void TelemetryPanel::render() {
         if (ImGui::Button("Stop Saving File")) {
             savingFile = false;
             file.close();
+            if (imu) imu->stopRecording();
         }
         ImGui::PopStyleColor();
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "REC: %s", csvFileBuffer);
@@ -111,8 +118,16 @@ void TelemetryPanel::render() {
                     csvHeaders.push_back(pair.first);
                     file << "," << pair.first;
                 }
+                liveHeaders.clear();
+                if (liveData) {
+                    for (const auto &pair : liveData->appliedValues()) {
+                        liveHeaders.push_back(pair.first);
+                        file << ",Live " << pair.first;
+                    }
+                }
                 file << "\n";
                 savingFile = true;
+                if (imu) imu->startRecording(p.string());
                 
                 // Copy the resolved path back to the buffer so the user sees where it went
                 strncpy(csvFileBuffer, p.string().c_str(), IM_ARRAYSIZE(csvFileBuffer) - 1);
@@ -132,6 +147,7 @@ void TelemetryPanel::stop() {
     if (savingFile) {
         file.close();
         savingFile = false;
+        if (imu) imu->stopRecording();
     }
     telemetryMap.clear();
     csvHeaders.clear();
@@ -142,39 +158,52 @@ void TelemetryPanel::stop() {
 TelemetryPanel::~TelemetryPanel() = default;
 
 void TelemetryPanel::graphData() {
-    if (!initialized) {
-        return;
+    // Every plottable number this frame: numeric telemetry (while the serial link is up) plus the IMU sensors
+    std::vector<std::pair<std::string, float>> values;
+    if (initialized) {
+        for (const auto &pair : telemetryMap) {
+            try {
+                values.emplace_back(pair.first, std::stof(pair.second));
+            } catch (const std::exception &) {
+                // non-numeric telemetry strings are not plotted
+            }
+        }
     }
-    
-    // 1. Draw checkboxes for each telemetry metric at the top
-    for (const auto &pair : telemetryMap) {
-        ImGui::Checkbox(pair.first.c_str(), &showMap[pair.first]);
-        ImGui::SameLine();
+    if (imu) {
+        auto imuValues = imu->latestValues();
+        values.insert(values.end(), imuValues.begin(), imuValues.end());
     }
-    ImGui::NewLine(); // Move to a new line after checkboxes
+
+    // 1. Draw checkboxes for each metric at the top, wrapping to the next line when the window is full
+    float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    for (size_t i = 0; i < values.size(); i++) {
+        const std::string &name = values[i].first;
+        ImGui::Checkbox(name.c_str(), &showMap[name]);
+        if (i + 1 < values.size()) {
+            float nextWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x
+                              + ImGui::CalcTextSize(values[i + 1].first.c_str()).x;
+            if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + nextWidth < right) ImGui::SameLine();
+        }
+    }
 
     static float t = 0;
 
     // 2. Data Logic (Updating buffers)
+    // shortcut: plots the latest IMU sample once per GUI frame (~120 Hz), the files keep all 200 Hz
     if (!paused) {
         t += ImGui::GetIO().DeltaTime;
-        for (const auto &pair : telemetryMap) {
-            if (showMap.count(pair.first) && showMap[pair.first]) {
-                try {
-                    float value = std::stof(pair.second);
-                    if (dataMap.count(pair.first) == 0 || dataMap[pair.first] == nullptr) {
-                        dataMap[pair.first] = new Util::ScrollingBuffer(); 
-                    }
-                    dataMap[pair.first]->AddPoint(t, value);
-                } catch (const std::exception& e) {
-                    // Handle non-numeric telemetry strings gracefully
+        for (const auto &[name, value] : values) {
+            if (showMap[name]) {
+                if (dataMap.count(name) == 0 || dataMap[name] == nullptr) {
+                    dataMap[name] = new Util::ScrollingBuffer();
                 }
+                dataMap[name]->AddPoint(t, value);
             }
         }
     }
 
-    // 3. Render the Plot (Fixed height to leave room for the slider below)
-    if (ImPlot::BeginPlot("##Digital", ImVec2(-1, 400))) {
+    // 3. Render the Plot (fills the window, leaving one row for the slider below)
+    if (ImPlot::BeginPlot("##Digital", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()))) {
         ImPlot::SetupAxes("Time (s)", "Value");
         
         // Force X-Axis to scroll with time based on history slider
@@ -184,11 +213,11 @@ void TelemetryPanel::graphData() {
         // that can still be manually panned/zoomed by the user
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
 
-        for (const auto &pair : telemetryMap) {
-            if (showMap.count(pair.first) && showMap[pair.first]) {
-                auto& buffer = dataMap[pair.first];
+        for (const auto &[name, value] : values) {
+            if (showMap[name]) {
+                auto& buffer = dataMap[name];
                 if (buffer && !buffer->Data.empty()) {
-                    ImPlot::PlotLineG(pair.first.c_str(), 
+                    ImPlot::PlotLineG(name.c_str(), 
                                     TelemetryGetter, 
                                     (void*)buffer, 
                                     (int)buffer->Data.size());

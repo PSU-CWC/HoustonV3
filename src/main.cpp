@@ -1,6 +1,7 @@
 
 
 #include "pch.h"
+#include "imgui_internal.h"  // DockBuilder, for the default layout
 
 #include <string>
 #include "GLFW/glfw3.h" // Will drag system OpenGL headers
@@ -10,6 +11,7 @@
 #include "components/TelemetryPanel.h"
 #include "components/AlertPanel.h"
 #include "components/LiveDataPanel.h"
+#include "components/ImuPanel.h"
 #include "dashboard/Dashboard.h"
 #include "consumer/TelemetryConsumer.h"
 #include "consumer/AlertConsumer.h"
@@ -21,6 +23,7 @@
 #endif
 
 
+#include <csignal>
 #include <iostream>
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
@@ -43,16 +46,50 @@ static void glfw_error_callback(int error, const char *description) {
 std::vector<Component *> components = std::vector<Component *>();
 
 
+// Default window placement:
+//  Control Panel | Digital Plots               | Telemetry
+//  Live Data     |-----------------------------| IMU (Bluetooth)
+//                | Alerts                      |
+static void buildDefaultLayout(ImGuiID dockspace, ImVec2 size) {
+    ImGui::DockBuilderRemoveNode(dockspace);
+    ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace, size);
+    ImGuiID center = dockspace;
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
+    ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.50f, nullptr, &left);
+    ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, nullptr, &right);
+    ImGuiID centerBottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25f, nullptr, &center);
+    ImGui::DockBuilderDockWindow("Control Panel", left);
+    ImGui::DockBuilderDockWindow("Live Data", leftBottom);
+    ImGui::DockBuilderDockWindow("Digital Plots", center);
+    ImGui::DockBuilderDockWindow("Alerts", centerBottom);
+    ImGui::DockBuilderDockWindow("Telemetry", right);
+    ImGui::DockBuilderDockWindow("IMU (Bluetooth)", rightBottom);
+    ImGui::DockBuilderFinish(dockspace);
+}
+
+// Ctrl+C in Terminal ends the main loop like closing the window, so cleanup still releases the IMU sensors
+static volatile std::sig_atomic_t quitRequested = 0;
+
 int main(int, char **) {
+    std::signal(SIGINT, [](int) { quitRequested = 1; });
+    std::signal(SIGTERM, [](int) { quitRequested = 1; });
     Dispatcher dispatcher;
 
     dispatcher.registerHandler(ID_Alert, new AlertConsumer());
     dispatcher.registerHandler(ID_Telemetry, new TelemetryConsumer());
     dispatcher.registerHandler(ID_Response_LiveData, new LiveDataConsumer());
     components.push_back(new ControlPanel("Control Panel", &dispatcher, &components));
-    components.push_back(new TelemetryPanel("Telemetry Panel", &dispatcher));
+    auto *imuPanel = new ImuPanel("IMU", &dispatcher);
+    auto *telemetryPanel = new TelemetryPanel("Telemetry Panel", &dispatcher);
+    telemetryPanel->imu = imuPanel;
+    components.push_back(telemetryPanel);
     components.push_back(new AlertPanel("Alert Panel", &dispatcher));
-    components.push_back(new LiveDataPanel("Live Data", &dispatcher));
+    auto *liveDataPanel = new LiveDataPanel("Live Data", &dispatcher);
+    telemetryPanel->liveData = liveDataPanel;
+    components.push_back(liveDataPanel);
+    components.push_back(imuPanel);
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -147,7 +184,7 @@ int main(int, char **) {
     io.IniFilename = nullptr;
     EMSCRIPTEN_MAINLOOP_BEGIN
 #else
-    while (!glfwWindowShouldClose(window))
+    while (!glfwWindowShouldClose(window) && !quitRequested)
 #endif
     {
         // Poll and handle events (inputs, window resize, etc.)
@@ -165,6 +202,7 @@ int main(int, char **) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        static bool resetLayout = false;
         static bool opt_fullscreen = true;
         static bool opt_padding = false;
         static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
@@ -199,6 +237,13 @@ int main(int, char **) {
         if (!opt_padding)
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("DockSpace Demo", nullptr, window_flags);
+        if (ImGui::BeginMenuBar()) {
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Reset Layout")) resetLayout = true;
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenuBar();
+        }
         if (!opt_padding)
             ImGui::PopStyleVar();
 
@@ -209,6 +254,11 @@ int main(int, char **) {
         ImGuiIO &io = ImGui::GetIO();
         if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable) {
             ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+            // No saved layout (first run, or imgui.ini deleted) or Reset Layout pressed: build the default one
+            if (resetLayout || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+                resetLayout = false;
+                buildDefaultLayout(dockspace_id, ImGui::GetMainViewport()->WorkSize);
+            }
             ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
         }
 
@@ -246,6 +296,7 @@ int main(int, char **) {
     EMSCRIPTEN_MAINLOOP_END;
 #endif
     // Cleanup
+    delete imuPanel;  // releases the sensors, so macOS does not keep holding them after Houston quits
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

@@ -29,6 +29,10 @@ add_executable(HoustonV2 src/main.cpp
         src/consumer/AlertConsumer.h
         src/consumer/TelemetryConsumer.h
         src/consumer/LiveDataConsumer.h
+        src/components/ImuPanel.cpp
+        src/components/ImuPanel.h
+        src/components/WitMotion.h
+        src/components/RunMerge.h
 )
 target_precompile_headers(HoustonV2 PRIVATE ${PCH_HEADER})
 
@@ -142,3 +146,20 @@ target_link_libraries(HoustonV2 PRIVATE imgui)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 target_link_libraries(HoustonV2 PRIVATE implot)
 target_link_libraries(HoustonV2 PRIVATE asio)
+
+# Bluetooth for the WitMotion IMU panel. SimpleBLE is BUSL-1.1: free for non-commercial use (this team), see its LICENSE.md
+# Linux needs: sudo apt-get install libdbus-1-dev
+FetchContent_Declare(
+        simpleble
+        GIT_REPOSITORY https://github.com/simpleble/simpleble.git
+        GIT_TAG v1.4.0
+        GIT_SHALLOW YES
+)
+FetchContent_GetProperties(simpleble)
+if (NOT simpleble_POPULATED)
+    FetchContent_Populate(simpleble)
+    list(APPEND CMAKE_MODULE_PATH "${simpleble_SOURCE_DIR}/cmake/find")
+    set(SIMPLEBLE_INSTALL OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${simpleble_SOURCE_DIR}/simpleble" "${simpleble_BINARY_DIR}")
+endif ()
+target_link_libraries(HoustonV2 PRIVATE simpleble::simpleble)
